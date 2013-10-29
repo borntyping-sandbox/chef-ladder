@@ -1,99 +1,115 @@
 #!/usr/bin/env ruby
 
+require 'chef/cookbook_loader'
+require 'chef/cookbook_uploader'
 require 'escort'
 require 'git'
-require 'ridley'
 
 module Ladder
-	class Utils
-		# Creates a directory if it does not exist
-		def self.ensure_directory(path)
-			Dir.mkdir(path) unless File.exists?(path)
-		end
-	end
-
-	class Config
-		# Creates a Config object from a file
+	class Sources < Hash
 		def self.from_file(filename)
-			config = Config.new
+			config = Sources.new
 			config.instance_eval(File.read(filename), filename)
 			return config
 		end
 
-		attr_reader :cookbooks
-
-		def initialize()
-			@cookbooks = Hash.new()
+		def cookbook(name, source, type=:git)
+			self[name] = cookbook_source(source, type)
 		end
 
-		def cookbook(name, source, type=:git)
+		private
+
+		def cookbook_source(source, type)
 			case type
 			when :git
-				@cookbooks[name] = source
+				return source
 			when :github
-				@cookbooks[name] = "git@github.com:#{source}.git"
+				return "git@github.com:#{source}.git"
 			else
-				raise Exception("Unknown type for cookbook #{name}")
+				raise Exception.new("Unknown type for cookbook #{name}")
 			end
 		end
 	end
 
-	class Error < RuntimeError
+	class Command < Escort::ActionCommand::Base
+		# Shortcut to the Escort logger
+		@@log = Escort::Logger.output
 
-	end
-
-	class Command < ::Escort::ActionCommand::Base
+		# Common command setup
 		def execute
-			@directory = File.join(Dir.home, '.ladder')
-			@config = Config.from_file(global_options[:config])
-			# TODO: Make --ssl-verify an option
-			@ridley = Ridley.from_chef_config(nil, :ssl => {:verify => false})
+			# Load Chef configuration
+			@chef_config = Chef::Config.from_file(global_options[:knife])
 
-			for name in arguments
-				self[name]
-			end
-		end
+			# Load Ladderfile configuration
+			@sources = Ladder::Sources.from_file(global_options[:config])
 
-		def cookbook_path(name)
-			return File.join(@directory, name)
-		end
-
-		def cookbook_exists(name)
-			return File.exists?(cookbook_path(name))
+			# If not arguments, use every cookbook in the Ladderfile
+			@cookbooks = arguments.empty? ? @sources.keys : arguments
 		end
 	end
 
 	class Fetch < Command
-		def [](name)
-			if cookbook_exists(name)
-				raise Ladder::Error.new("Cookbook '#{name}' is already present!")
+		def execute
+			super
+			@@log.info "Fetching cookbooks: #{@cookbooks.join(', ')}"
+			@cookbooks.each { |name| fetch_cookbook(name) }
+		end
+
+		# Fetches a single cookbook
+		def fetch_cookbook(name)
+			if not @sources.has_key? name
+				raise "No source listed for cookbook '#{name}'"
 			end
 
-			Escort::Logger.output.puts "Fetching cookbook '#{name}'"
-			Ladder::Utils.ensure_directory(@directory)
-			Git.clone(@config.cookbooks[name], cookbook_path(name))
+			ensure_directory(global_options[:directory])
+
+			path = File.join(global_options[:directory], name)
+
+
+			if Dir.exists?(path)
+				Git.open(path).pull()
+			else
+				Git.clone(@sources[name], path)
+			end
+		end
+
+		private
+
+		# Creates a directory if it does not exist
+		def ensure_directory(path)
+			Dir.mkdir(path) unless File.exists?(path)
 		end
 	end
 
 	class Upload < Command
-		def [](name)
-			Ladder::Fetch[name] if not cookbook_exists(name)
-			Escort::Logger.output.puts "Uploading cookbook '#{name}'"
-			@ridley.cookbook.upload(cookbook_path(name), :validate => true)
+		def execute
+			super
+
+			# Load the selected cookbooks from the ladder directory
+			loader = Chef::CookbookLoader.new(global_options[:directory])
+			cookbooks = @cookbooks.map { |name| loader.load_cookbook(name) }
+
+			@@log.info "Uploading cookbooks: #{cookbooks.map {|c| c.name.to_s }.join(', ')}"
+
+			# Upload the selected cookbooks
+			Chef::CookbookUploader.new(cookbooks, global_options[:directory]).upload_cookbooks
 		end
 	end
 end
 
 Escort::App.create do |app|
-	app.version '0.1.0'
+	app.version '0.2.0'
 	app.summary 'Fetch those hard to reach cookbooks'
 
 	app.options do |opts|
-		opts.opt :config, "Config", :short => '-c', :long => '--config', :type => :string, :default => 'Ladderfile'
+		opts.opt :config, "Ladder configuration file", :short => '-c', :long => '--config', :type => :string, :default => './Ladderfile'
+		opts.opt :directory, "Ladder cookbooks directory", :short => '-d', :long => '--directory', :type => :string, :default => File.join(Dir.home, '.ladder')
+		opts.opt :knife, "Knife configuration file", :short => '-k', :long => '--knife-config', :type => :string, :default => File.join(Dir.home, '.chef', 'knife.rb')
 	end
 
 	app.command :fetch do |command|
 		command.summary "Fetch cookbooks"
+		command.description "Fetch cookbooks"
 
 		command.action do |options, arguments|
 			Ladder::Fetch.new(options, arguments).execute
@@ -102,6 +118,7 @@ Escort::App.create do |app|
 
 	app.command :upload do |command|
 		command.summary "Upload cookbooks"
+		command.description "Upload cookbooks"
 
 		command.action do |options, arguments|
 			Ladder::Upload.new(options, arguments).execute
