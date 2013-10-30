@@ -48,6 +48,11 @@ module Ladder
 		end
 
 		class LocalCookbook < Cookbook
+			def initialize(name, source)
+				@name = name
+				@source = File.absolute_path(source)
+			end
+
 			def fetch(directory)
 				dest = File.join(directory, @name)
 				FileUtils.remove(dest, :force => true)
@@ -77,26 +82,23 @@ module Ladder
 			@sources = Ladder::Sources.from_file(global_options[:config])
 		end
 
+		# A list of Ladder::Cookbook objects
 		# If the arguments list is empty, all cookbooks are used
-		def cookbook_names
-			return arguments.empty? ? @sources.keys : arguments
-		end
-
-		def cookbooks
-			return cookbook_names.map { |name| @sources[name] }
-		end
-
-		def directory
-			return global_options[:directory]
+		def selected_cookbooks
+			names = arguments.empty? ? @sources.keys : arguments
+			names.map { |name| @sources[name] }
 		end
 	end
 
 	class Fetch < Command
 		def execute
 			super
-			puts "Fetching cookbooks:  #{cookbook_names.join(', ')}"
-			ensure_directory(directory)
-			cookbooks.each { |cookbook| cookbook.fetch(directory) }
+			puts "Fetching cookbooks:"
+			ensure_directory(global_options[:directory])
+			for cookbook in selected_cookbooks
+				puts " - #{cookbook.name}"
+				cookbook.fetch(global_options[:directory])
+			end
 		end
 
 		private
@@ -110,35 +112,31 @@ module Ladder
 	class Upload < Command
 		def execute
 			super
-
-			puts "Uploading cookbooks: #{cookbook_names.join(', ')}"
-
-			# Load the selected cookbooks from the ladder directory
-			@loader = Chef::CookbookLoader.new(directory)
-
-			# Upload the selected cookbooks
-			@uploader = Chef::CookbookUploader.new(chef_cookbooks, directory)
-			@uploader.upload_cookbooks
+			puts "Uploading cookbooks:"
+			for cookbook in selected_cookbooks
+				puts " + #{cookbook.name}"
+				upload_cookbook(load_cookbook(cookbook))
+			end
 		end
 
 		def load_cookbook(cookbook)
+			@loader ||= Chef::CookbookLoader.new(global_options[:directory])
 			chef_cookbook = @loader.load_cookbook(cookbook.name)
-
 			if chef_cookbook.nil?
 				raise "Could not load cookbook '#{cookbook.name}'"
+			else
+				return chef_cookbook
 			end
-
-			return chef_cookbook
 		end
 
-		def chef_cookbooks
-			cookbooks.map { |cookbook| load_cookbook(cookbook) }
+		def upload_cookbook(cookbooks)
+			Chef::CookbookUploader.new(cookbooks, global_options[:directory]).upload_cookbooks
 		end
 	end
 end
 
 Escort::App.create do |app|
-	app.version '0.3.0'
+	app.version '0.4.0'
 	app.summary 'Fetch those hard to reach cookbooks'
 
 	app.options do |opts|
