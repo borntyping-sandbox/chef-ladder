@@ -24,6 +24,8 @@ module Ladder
 				@name = name
 				@source = source
 			end
+
+			attr_reader :name
 		end
 
 		class GitCookbook < Cookbook
@@ -47,7 +49,9 @@ module Ladder
 
 		class LocalCookbook < Cookbook
 			def fetch(directory)
-				FileUtils.cp_r(@source, directory)
+				dest = File.join(directory, @name)
+				FileUtils.remove(dest, :force => true)
+				FileUtils.symlink(@source, dest, :force => true)
 			end
 		end
 	end
@@ -65,37 +69,34 @@ module Ladder
 	end
 
 	class Command < Escort::ActionCommand::Base
-		# Shortcut to the Escort logger
-		@@log = Escort::Logger.output
-
-		# Common command setup
 		def execute
 			# Load Chef configuration
-			@chef_config = Chef::Config.from_file(global_options[:knife])
+			@@chef_config ||= Chef::Config.from_file(global_options[:knife])
 
 			# Load Ladderfile configuration
 			@sources = Ladder::Sources.from_file(global_options[:config])
+		end
 
-			# If not arguments, use every cookbook in the Ladderfile
-			@cookbooks = arguments.empty? ? @sources.keys : arguments
+		# If the arguments list is empty, all cookbooks are used
+		def cookbook_names
+			return arguments.empty? ? @sources.keys : arguments
+		end
+
+		def cookbooks
+			return cookbook_names.map { |name| @sources[name] }
+		end
+
+		def directory
+			return global_options[:directory]
 		end
 	end
 
 	class Fetch < Command
 		def execute
 			super
-			@@log.info "Fetching cookbooks: #{@cookbooks.join(', ')}"
-			@cookbooks.each { |name| fetch_cookbook(name) }
-		end
-
-		# Fetches a single cookbook
-		def fetch_cookbook(name)
-			if not @sources.has_key? name
-				raise "No source listed for cookbook '#{name}'"
-			end
-
-			ensure_directory(global_options[:directory])
-			@sources[name].fetch(global_options[:directory])
+			puts "Fetching cookbooks:  #{cookbook_names.join(', ')}"
+			ensure_directory(directory)
+			cookbooks.each { |cookbook| cookbook.fetch(directory) }
 		end
 
 		private
@@ -110,14 +111,28 @@ module Ladder
 		def execute
 			super
 
-			# Load the selected cookbooks from the ladder directory
-			loader = Chef::CookbookLoader.new(global_options[:directory])
-			cookbooks = @cookbooks.map { |name| loader.load_cookbook(name) }
+			puts "Uploading cookbooks: #{cookbook_names.join(', ')}"
 
-			@@log.info "Uploading cookbooks: #{cookbooks.map {|c| c.name.to_s }.join(', ')}"
+			# Load the selected cookbooks from the ladder directory
+			@loader = Chef::CookbookLoader.new(directory)
 
 			# Upload the selected cookbooks
-			Chef::CookbookUploader.new(cookbooks, global_options[:directory]).upload_cookbooks
+			@uploader = Chef::CookbookUploader.new(chef_cookbooks, directory)
+			@uploader.upload_cookbooks
+		end
+
+		def load_cookbook(cookbook)
+			chef_cookbook = @loader.load_cookbook(cookbook.name)
+
+			if chef_cookbook.nil?
+				raise "Could not load cookbook '#{cookbook.name}'"
+			end
+
+			return chef_cookbook
+		end
+
+		def chef_cookbooks
+			cookbooks.map { |cookbook| load_cookbook(cookbook) }
 		end
 	end
 end
@@ -146,6 +161,16 @@ Escort::App.create do |app|
 		command.description "Upload cookbooks"
 
 		command.action do |options, arguments|
+			Ladder::Upload.new(options, arguments).execute
+		end
+	end
+
+	app.command :update do |command|
+		command.summary "Fetch and upload cookbooks"
+		command.description "Fetch and upload  cookbooks"
+
+		command.action do |options, arguments|
+			Ladder::Fetch.new(options, arguments).execute
 			Ladder::Upload.new(options, arguments).execute
 		end
 	end
