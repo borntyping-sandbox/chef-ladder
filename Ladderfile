@@ -1,0 +1,8 @@
+#
+# Ladderfile
+#
+# Defines external cookbooks and their sources
+#
+cookbook "supervisor-git", :git => "git@github.com:borntyping/cookbook-supervisor.git"
+cookbook "supervisor-github", :github => "borntyping/cookbook-supervisor"
+cookbook "supervisor-path", :path => "../cookbook-supervisor"
