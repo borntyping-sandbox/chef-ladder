@@ -6,6 +6,52 @@ require 'escort'
 require 'git'
 
 module Ladder
+	module Cookbooks
+		class Cookbook
+			def self.create(name, options)
+				if options.has_key? :path
+					return LocalCookbook.new(name, options[:path])
+				elsif options.has_key? :git
+					return GitCookbook.new(name, options[:git])
+				elsif options.has_key? :github
+					return GithubCookbook.new(name, options[:github])
+				else
+					raise "No valid source defined for cookbook '#{name}'"
+				end
+			end
+
+			def initialize(name, source)
+				@name = name
+				@source = source
+			end
+		end
+
+		class GitCookbook < Cookbook
+			def fetch(directory)
+				path = File.join(directory, @name)
+
+				if Dir.exists?(path)
+					Git.open(path).pull()
+				else
+					Git.clone(@source, path)
+				end
+			end
+		end
+
+		class GithubCookbook < GitCookbook
+			def initialize(name, source)
+				@name = name
+				@source = "git@github.com:#{source}.git"
+			end
+		end
+
+		class LocalCookbook < Cookbook
+			def fetch(directory)
+				FileUtils.cp_r(@source, directory)
+			end
+		end
+	end
+
 	class Sources < Hash
 		def self.from_file(filename)
 			config = Sources.new
@@ -13,21 +59,8 @@ module Ladder
 			return config
 		end
 
-		def cookbook(name, source, type=:git)
-			self[name] = cookbook_source(source, type)
-		end
-
-		private
-
-		def cookbook_source(source, type)
-			case type
-			when :git
-				return source
-			when :github
-				return "git@github.com:#{source}.git"
-			else
-				raise Exception.new("Unknown type for cookbook #{name}")
-			end
+		def cookbook(name, options)
+			self[name] = Ladder::Cookbooks::Cookbook.create(name, options)
 		end
 	end
 
@@ -62,15 +95,7 @@ module Ladder
 			end
 
 			ensure_directory(global_options[:directory])
-
-			path = File.join(global_options[:directory], name)
-
-
-			if Dir.exists?(path)
-				Git.open(path).pull()
-			else
-				Git.clone(@sources[name], path)
-			end
+			@sources[name].fetch(global_options[:directory])
 		end
 
 		private
@@ -98,7 +123,7 @@ module Ladder
 end
 
 Escort::App.create do |app|
-	app.version '0.2.0'
+	app.version '0.3.0'
 	app.summary 'Fetch those hard to reach cookbooks'
 
 	app.options do |opts|
