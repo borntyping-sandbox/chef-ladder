@@ -1,6 +1,8 @@
 chef-ladder
 ===========
 
+[![Gem Version](https://badge.fury.io/rb/chef-ladder.png)](http://badge.fury.io/rb/chef-ladder)
+
 Ladder is a very small command line tool for managing external cookbooks. While inspired by [berkshelf](http://berkshelf.com/) and [librarian-chef](https://github.com/applicationsonline/librarian-chef), it is much simpler, and only provides a few operations.
 
 ## Installation
